@@ -1,0 +1,54 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+# Clone the repository and prepare the environment
+  - checkout: self
+# For terraform project it's necessary create a terraform plan file to pass the IaC scan
+  - task: Bash@3
+    displayName: "Create Terraform plan file"
+    inputs:
+      targetType: 'inline'
+      script: |
+        find . -type f \( -iname "*.tf" \) | while read file; do
+            cd terraform-directory
+            terraform init -input=false -no-color
+            terraform plan -out=tfplan -input=false -no-color
+            terraform show -json tfplan > $(Build.ArtifactStagingDirectory)/templates/output_plan.json
+        done
+# Identify and copy valid IaC templates to a temporary folder
+  - task: Bash@3
+    displayName: "Copiar templates válidos a carpeta temporal"
+    inputs:
+      targetType: 'inline'
+      script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/templates
+        find . -type f \( -iname "*.json" -o -iname "*.yaml" -o -iname "*.yml" -o -iname "*.template" \) | while read file; do
+            cp "$file" $(Build.ArtifactStagingDirectory)/templates/
+        done
+# Request the IaC scan to Vision One
+  - task: Bash@3
+    displayName: "Run IaC scan with Vision One Template Scanner"
+    env:
+      TM_API_KEY: $(TM_API_KEY)  # need to set this variable in your pipeline settings
+    inputs:
+      targetType: 'inline'
+      script: |
+        mkdir -p $(System.DefaultWorkingDirectory)/results
+        docker run --rm \
+          -e TM_API_KEY=$TM_API_KEY \
+          -v $(System.DefaultWorkingDirectory):/src \
+          -v $(System.DefaultWorkingDirectory)/results:/results \
+          -w /src \
+          ghcr.io/xeniap/tm_scanner_ci:latest
+
+# Save results to a specific folder
+  - task: PublishBuildArtifacts@1
+    inputs:
+      pathToPublish: '$(System.DefaultWorkingDirectory)/results'
+      artifactName: 'iac-scan-results'

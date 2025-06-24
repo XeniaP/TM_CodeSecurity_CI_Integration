@@ -5,9 +5,9 @@ resources:
 - repo: self
 
 variables:
-  repository: 'repositoryURI'
+  repository: 'xniapdev/django-app'
   tag: '$(Build.BuildId)'
-  imageName: 'imageName'
+  imageName: 'django-app'
 
 stages:
 - stage: Build
@@ -44,15 +44,13 @@ stages:
       displayName: "Scan from Registry to Json"
       inputs:
         targetType: 'inline'
-        script: ./tmas-cli/tmas scan docker-archive:image.tar --malwareScan --saveSBOM > result.json
+        script: ./tmas-cli/tmas scan docker-archive:image.tar -VMS --saveSBOM > result.json
       env:
         TMAS_API_KEY: $(TMAS_API_KEY)
     - script: |
         git clone https://github.com/XeniaP/CS-ArtifactScanner-Report.git
         pip install -r ./CS-ArtifactScanner-Report/requirements.txt
-        echo "$(System.DefaultWorkingDirectory)"
         python ./CS-ArtifactScanner-Report/export_report_tmas.py $(imageName) --resultFile ./result.json
-        ls -la
         FILE=$(ls *.xlsx | head -n 1)
         echo "##vso[task.setvariable variable=excelFileName]$FILE"
       displayName: Create Excel Report with Vulnerabilities
@@ -60,4 +58,3 @@ stages:
       inputs:
         targetPath: '$(System.DefaultWorkingDirectory)/$(excelFileName)'
         publishLocation: 'pipeline'
-    
