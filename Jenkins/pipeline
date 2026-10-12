@@ -1,68 +1,64 @@
-pipeline {
-    environment {
-        registry = "my-username/my-imagename"
-        registryCredential = 'dockerhub_id'
-        dockerImage = ''
-        TMAS_API_KEY = credentials('TMAS_API_KEY')
-        TMAS_HOME = "$WORKSPACE/tmas"
-    }
-    agent any
-    stages {
-        stage('First Clean') {
-            steps {
-                sh "echo $WORKSPACE/tmas"
-                sh "rm -rf ./actions-test"
-            }
-        }
-        stage('Cloning our Git') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
-                    sh "git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/my-username/my-repository"
-                }
-            }
-        }
-        stage('Building our image') {
-            steps {
-                script {
-                    // Location of the Dockerfile in the cloned repository
-                    def dockerfilePath = "my-repository/Dockerfile"
-                    // Build the Docker image using the Dockerfile from the cloned repository
-                    dockerImage = docker.build("${registry}:${BUILD_NUMBER}", "-f ${dockerfilePath} .")
-                }
-            }
-        }
 
-        stage('Install TMAS') {
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'IMAGE', defaultValue: 'nginx:latest')
+        string(name: 'TMAS_REGION', defaultValue: 'us-east-1')
+    }
+
+    stages {
+        stage('TrendAI Code Security Scan') {
             steps {
-                // Create the TMAS installation directory
-                sh "mkdir -p $TMAS_HOME"
-                // Download and extract TMAS into the installation directory
-                sh "curl -L https://cli.artifactscan.cloudone.trendmicro.com/tmas-cli/latest/tmas-cli_Linux_x86_64.tar.gz | tar xz -C $TMAS_HOME"
-            }
-        }
-        stage('Scan with TMAS') {
-            steps {
-                // Execute the scan with TMAS
-                sh "$TMAS_HOME/tmas scan registry:username/my-imagename:latest --region us-1"
-            }
-        }
-        
-        stage('Deploy our image') {
-            steps {
-                script {
-                    docker.withRegistry('', registryCredential) {
-                        dockerImage.push()
+                withCredentials([string(
+                    credentialsId: 'tmas-api-key',
+                    variable: 'TMAS_API_KEY'
+                )]) {
+                    script {
+                        sh '''
+                            set -eu
+                            mkdir -p tools
+
+                            curl -fsSL \
+                              https://ast-cli.xdr.trendmicro.com/tmas-cli/latest/tmas-cli_Linux_x86_64.tar.gz \
+                              | tar -xz -C tools tmas
+
+                            chmod +x tools/tmas
+                        '''
+
+                        def rc = sh(
+                            script: '''
+                                set +x
+                                rm -f tmas-results.json
+
+                                ./tools/tmas scan "registry:${IMAGE}" \
+                                  -VMS --region "$TMAS_REGION" \
+                                  --evaluatePolicy \
+                                  --report-all-fixed-versions \
+                                  --output json=tmas-results.json \
+                                  > tmas-scan.log 2>&1
+                            ''',
+                            returnStatus: true
+                        )
+
+                        if (rc == 2) {
+                            error('SECURITY GATE BLOCKED: Policy violation')
+                        }
+                        if (rc != 0 || !fileExists('tmas-results.json')) {
+                            error("TMAS scan failed: exit ${rc}")
+                        }
                     }
                 }
             }
         }
-        stage('Cleaning up') {
-            steps {
-                script {
-                    // Clean up the locally built image
-                    sh "docker rmi ${registry}:${BUILD_NUMBER}"
-                }
-            }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'tmas-results.json,tmas-scan.log',
+                allowEmptyArchive: true
+            )
         }
     }
 }
